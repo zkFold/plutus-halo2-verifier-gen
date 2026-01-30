@@ -19,7 +19,7 @@
 use ff::PrimeField;
 use halo2_proofs::circuit::{Layouter, SimpleFloorPlanner, Value};
 use halo2_proofs::plonk::{
-    Advice, Circuit, Column, ConstraintSystem, Error, Fixed, Instance, Selector, TableColumn,
+    Advice, Circuit, Column, ConstraintSystem, Error, Instance, Selector, TableColumn,
 };
 use halo2_proofs::poly::Rotation;
 use std::marker::PhantomData;
@@ -28,19 +28,20 @@ use std::marker::PhantomData;
 pub const NB_LOOKUP_COLS: usize = 3;
 
 /// Configuration for the PlonkUp circuit
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct PlonkUpConfig {
-    /// Instance column for public inputs
-    instance: Column<Instance>,
+    /// Instance column for public inputs (exposes sum of XOR results as public input)
+    pub instance: Column<Instance>,
     /// Selector for the lookup argument
     q_lookup: Selector,
     /// Selector for the polynomial constraint
     q_poly: Selector,
+    /// Selector for the accumulator constraint (used to compute sum of XOR results)
+    q_acc: Selector,
     /// The advice columns for lookup inputs (a, b, c) where c = a XOR b
     advice_cols: [Column<Advice>; NB_LOOKUP_COLS],
-    /// Fixed column for constants
-    constant: Column<Fixed>,
+    /// Advice column for accumulator (running sum of XOR results)
+    acc_col: Column<Advice>,
     /// Table columns for 3-element tuple lookup (t_a, t_b, t_c)
     t_a: TableColumn,
     t_b: TableColumn,
@@ -55,6 +56,7 @@ pub struct PlonkUpConfig {
 /// - `xor_inputs`: Tuples (a, b, a XOR b) for lookup verification
 /// - `poly_inputs`: Tuples (a, b, a * b) for polynomial constraint verification
 /// - `max_bits`: Maximum bit length for lookup values (table size = 2^(2*max_bits))
+/// - `xor_sum`: Sum of all XOR results (public input)
 #[derive(Clone, Default)]
 pub struct PlonkUpCircuit<F: PrimeField> {
     /// XOR lookup inputs: Vec of (a, b, a XOR b)
@@ -63,6 +65,8 @@ pub struct PlonkUpCircuit<F: PrimeField> {
     pub poly_inputs: Vec<(u64, u64, u64)>,
     /// Maximum bit length for values (determines table size)
     pub max_bits: usize,
+    /// Sum of all XOR results (exposed as public input)
+    pub xor_sum: u64,
     /// Marker for the field type
     pub _marker: PhantomData<F>,
 }
@@ -84,11 +88,12 @@ impl<F: PrimeField> PlonkUpCircuit<F> {
             max_bits <= 8,
             "max_bits must be <= 8 to avoid excessive table sizes (2^(2*max_bits) entries)"
         );
-        // Compute the XOR results
-        let xor_inputs = xor_inputs
+        // Compute the XOR results and their sum
+        let xor_inputs: Vec<_> = xor_inputs
             .into_iter()
             .map(|(a, b)| (a, b, a ^ b))
             .collect();
+        let xor_sum: u64 = xor_inputs.iter().map(|(_, _, c)| c).sum();
         // Compute the multiplication results
         let poly_inputs = poly_inputs
             .into_iter()
@@ -98,8 +103,14 @@ impl<F: PrimeField> PlonkUpCircuit<F> {
             xor_inputs,
             poly_inputs,
             max_bits,
+            xor_sum,
             _marker: PhantomData,
         }
+    }
+    
+    /// Returns the public input (sum of XOR results) as a field element
+    pub fn public_input(&self) -> F {
+        F::from(self.xor_sum)
     }
 }
 
@@ -124,17 +135,22 @@ impl<F: PrimeField> Circuit<F> for PlonkUpCircuit<F> {
             meta.enable_equality(*col);
         }
 
-        // Create instance column for public inputs
+        // Create accumulator column for computing sum of XOR results
+        let acc_col = meta.advice_column();
+        meta.enable_equality(acc_col);
+
+        // Create instance column for public inputs (exposed sum of XOR results)
         let instance = meta.instance_column();
         meta.enable_equality(instance);
 
-        // Create fixed column for constants
-        let constant = meta.fixed_column();
-        meta.enable_constant(constant);
+        // Create fixed column for constants (used for initial accumulator value via assign_advice_from_constant)
+        let _constant = meta.fixed_column();
+        meta.enable_constant(_constant);
 
         // Create selectors
         let q_lookup = meta.complex_selector();
         let q_poly = meta.selector();
+        let q_acc = meta.selector();
 
         // Create table columns for 3-element tuple lookup
         let t_a = meta.lookup_table_column();
@@ -166,12 +182,26 @@ impl<F: PrimeField> Circuit<F> for PlonkUpCircuit<F> {
             vec![sel * (a * b - c)]
         });
 
+        // Configure accumulator constraint: acc = prev_acc + xor_result
+        // This accumulates the sum of XOR results to expose as public input
+        // Note: This uses only Rotation::cur() to stay PlonkUp-compatible
+        meta.create_gate("accumulator", |meta| {
+            let sel = meta.query_selector(q_acc);
+            let xor_result = meta.query_advice(advice_cols[2], Rotation::cur());
+            let prev_acc = meta.query_advice(advice_cols[0], Rotation::cur());
+            let acc = meta.query_advice(acc_col, Rotation::cur());
+
+            // Constraint: acc = prev_acc + xor_result
+            vec![sel * (acc - prev_acc - xor_result)]
+        });
+
         PlonkUpConfig {
             instance,
             q_lookup,
             q_poly,
+            q_acc,
             advice_cols,
-            constant,
+            acc_col,
             t_a,
             t_b,
             t_c,
@@ -227,7 +257,7 @@ impl<F: PrimeField> Circuit<F> for PlonkUpCircuit<F> {
                     // Enable the lookup selector
                     config.q_lookup.enable(&mut region, offset)?;
 
-                    // Assign the 3-element tuple
+                    // Assign the 3-element tuple for lookup
                     region.assign_advice(
                         || "a",
                         config.advice_cols[0],
@@ -250,6 +280,67 @@ impl<F: PrimeField> Circuit<F> for PlonkUpCircuit<F> {
                 Ok(())
             },
         )?;
+
+        // Compute and constrain the sum of XOR results using the accumulator
+        // This uses the constant column for the initial zero value
+        let final_acc = layouter.assign_region(
+            || "accumulator",
+            |mut region| {
+                let mut running_sum: u64 = 0;
+                let mut final_acc_cell = None;
+
+                for (offset, (_, _, c)) in self.xor_inputs.iter().enumerate() {
+                    // Enable the accumulator constraint
+                    config.q_acc.enable(&mut region, offset)?;
+
+                    // Assign prev_acc (running sum before adding current XOR result)
+                    // Use assign_advice_from_constant for the first row to use the constant column
+                    if offset == 0 {
+                        region.assign_advice_from_constant(
+                            || "prev_acc_zero",
+                            config.advice_cols[0],
+                            offset,
+                            F::ZERO,
+                        )?;
+                    } else {
+                        region.assign_advice(
+                            || "prev_acc",
+                            config.advice_cols[0],
+                            offset,
+                            || Value::known(F::from(running_sum)),
+                        )?;
+                    }
+
+                    // Assign the XOR result
+                    region.assign_advice(
+                        || "xor_result",
+                        config.advice_cols[2],
+                        offset,
+                        || Value::known(F::from(*c)),
+                    )?;
+
+                    // Update running sum
+                    running_sum += c;
+
+                    // Assign the new accumulator value
+                    let acc_cell = region.assign_advice(
+                        || "acc",
+                        config.acc_col,
+                        offset,
+                        || Value::known(F::from(running_sum)),
+                    )?;
+                    
+                    final_acc_cell = Some(acc_cell);
+                }
+                
+                Ok(final_acc_cell)
+            },
+        )?;
+
+        // Constrain the final accumulator value to equal the public input
+        if let Some(acc_cell) = final_acc {
+            layouter.constrain_instance(acc_cell.cell(), config.instance, 0)?;
+        }
 
         // Assign polynomial constraint witnesses (a * b = c)
         // This demonstrates PlonkUp's polynomial constraints without neighboring row references
@@ -316,8 +407,8 @@ mod tests {
 
         let circuit = PlonkUpCircuit::<Scalar>::new(xor_inputs, poly_inputs, 2);
 
-        // Empty public inputs
-        let pi = vec![vec![]];
+        // Public input is the sum of XOR results
+        let pi = vec![vec![circuit.public_input()]];
 
         let k: u32 = k_from_circuit(&circuit);
         let prover =
@@ -344,7 +435,8 @@ mod tests {
 
         let circuit = PlonkUpCircuit::<Scalar>::new(xor_inputs, poly_inputs, 4);
 
-        let pi = vec![vec![]];
+        // Public input is the sum of XOR results
+        let pi = vec![vec![circuit.public_input()]];
 
         let k: u32 = k_from_circuit(&circuit);
         let prover =

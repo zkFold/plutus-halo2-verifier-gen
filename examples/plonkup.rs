@@ -100,9 +100,10 @@ pub fn compile_plonkup_circuit<
     let vk: VerifyingKey<Scalar, S> = keygen_vk(&kzg_params, &circuit)?;
     let pk: ProvingKey<Scalar, S> = keygen_pk(vk.clone(), &circuit)?;
 
-    // Empty public inputs
-    let instances: &[&[&[Scalar]]] = &[&[&[]]];
-    info!("Public inputs: {:?}", instances);
+    // Public input: sum of XOR results
+    let public_input = circuit.public_input();
+    let instances: &[&[&[Scalar]]] = &[&[&[public_input]]];
+    info!("Public inputs (sum of XOR results): {:?}", instances);
 
     let instances_file =
         "./plinth-verifier/plutus-halo2/test/Generic/serialized_public_input.hex".to_string();
@@ -155,31 +156,14 @@ pub fn compile_plonkup_circuit<
     generate_plinth_verifier(&kzg_params, &vk, instances)
         .context("Plinth verifier generation failed")?;
 
-    // Create invalid proof inputs for testing (with different inputs)
-    let invalid_xor_inputs = vec![
-        (1, 2), // Different inputs to generate a different proof
-        (3, 4),
-        (5, 6),
-        (7, 8),
-    ];
-    let invalid_poly_inputs = vec![
-        (1, 1), // Different polynomial inputs
-        (2, 2),
-    ];
-    let invalid_circuit = PlonkUpCircuit::<Scalar>::new(invalid_xor_inputs, invalid_poly_inputs, 4);
-    
-    let mut transcript: CircuitTranscript<CardanoFriendlyBlake2b> =
-        CircuitTranscript::<CardanoFriendlyBlake2b>::init();
-    create_proof(
-        &kzg_params,
-        &pk,
-        &[invalid_circuit],
-        instances,
-        &mut rng,
-        &mut transcript,
-    )
-    .context("invalid proof generation should not fail")?;
-    let invalid_proof = transcript.finalize();
+    // Create an invalid proof by flipping some bytes in the valid proof
+    // This approach ensures the circuit structure is the same
+    let mut invalid_proof = proof.clone();
+    // Flip a byte in the middle of the proof (away from curve point encoding to avoid deserialization errors)
+    // The circuit has lookup and accumulator constraints, so proof structure includes:
+    // commitments + evaluations + opening proof
+    let flip_index = invalid_proof.len() / 2;
+    invalid_proof[flip_index] = !invalid_proof[flip_index];
 
     generate_aiken_verifier(
         &kzg_params,
