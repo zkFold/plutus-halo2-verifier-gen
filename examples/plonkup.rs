@@ -83,7 +83,15 @@ pub fn compile_plonkup_circuit<
         (7, 8),   // 7 XOR 8 = 15
     ];
 
-    let circuit = PlonkUpCircuit::<Scalar>::new(xor_inputs.clone(), 4);
+    // Create polynomial constraint inputs (a * b = c)
+    let poly_inputs = vec![
+        (2, 3),  // 2 * 3 = 6
+        (4, 5),  // 4 * 5 = 20
+        (10, 2), // 10 * 2 = 20
+        (3, 7),  // 3 * 7 = 21
+    ];
+
+    let circuit = PlonkUpCircuit::<Scalar>::new(xor_inputs, poly_inputs, 4);
 
     let k: u32 = k_from_circuit(&circuit);
     info!("PlonkUp circuit k: {}", k);
@@ -99,7 +107,7 @@ pub fn compile_plonkup_circuit<
     let instances_file =
         "./plinth-verifier/plutus-halo2/test/Generic/serialized_public_input.hex".to_string();
     let mut output = File::create(instances_file).context("failed to create instances file")?;
-    export_public_inputs(instances, &mut output).context("Failed to export the public input")?;
+    export_public_inputs(instances, &mut output).context("Failed to export the public inputs")?;
 
     let mut transcript: CircuitTranscript<CardanoFriendlyBlake2b> =
         CircuitTranscript::<CardanoFriendlyBlake2b>::init();
@@ -154,7 +162,11 @@ pub fn compile_plonkup_circuit<
         (5, 6),
         (7, 8),
     ];
-    let invalid_circuit = PlonkUpCircuit::<Scalar>::new(invalid_xor_inputs, 4);
+    let invalid_poly_inputs = vec![
+        (1, 1), // Different polynomial inputs
+        (2, 2),
+    ];
+    let invalid_circuit = PlonkUpCircuit::<Scalar>::new(invalid_xor_inputs, invalid_poly_inputs, 4);
     
     let mut transcript: CircuitTranscript<CardanoFriendlyBlake2b> =
         CircuitTranscript::<CardanoFriendlyBlake2b>::init();

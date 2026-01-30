@@ -6,6 +6,15 @@
 //! - No references to neighboring rows (only Rotation::cur())
 //!
 //! This circuit is used for benchmarking the on-chain verifier performance.
+//!
+//! # Note on table size
+//!
+//! The XOR lookup table size grows as O(2^(2*max_bits)), so:
+//! - max_bits=2: 16 entries
+//! - max_bits=4: 256 entries
+//! - max_bits=8: 65,536 entries
+//!
+//! Keep max_bits small (≤ 4) for reasonable performance in testing.
 
 use ff::PrimeField;
 use halo2_proofs::circuit::{Layouter, SimpleFloorPlanner, Value};
@@ -40,10 +49,18 @@ pub struct PlonkUpConfig {
 
 /// PlonkUp circuit with 3-element tuple lookups and polynomial constraints.
 /// Demonstrates XOR operations verified via lookup tables.
+///
+/// # Fields
+///
+/// - `xor_inputs`: Tuples (a, b, a XOR b) for lookup verification
+/// - `poly_inputs`: Tuples (a, b, a * b) for polynomial constraint verification
+/// - `max_bits`: Maximum bit length for lookup values (table size = 2^(2*max_bits))
 #[derive(Clone, Default)]
 pub struct PlonkUpCircuit<F: PrimeField> {
     /// XOR lookup inputs: Vec of (a, b, a XOR b)
     pub xor_inputs: Vec<(u64, u64, u64)>,
+    /// Polynomial constraint inputs: Vec of (a, b, a * b)
+    pub poly_inputs: Vec<(u64, u64, u64)>,
     /// Maximum bit length for values (determines table size)
     pub max_bits: usize,
     /// Marker for the field type
@@ -51,15 +68,35 @@ pub struct PlonkUpCircuit<F: PrimeField> {
 }
 
 impl<F: PrimeField> PlonkUpCircuit<F> {
-    /// Create a new PlonkUp circuit with the given XOR inputs
-    pub fn new(xor_inputs: Vec<(u64, u64)>, max_bits: usize) -> Self {
+    /// Create a new PlonkUp circuit with the given XOR and polynomial inputs.
+    ///
+    /// # Arguments
+    ///
+    /// - `xor_inputs`: Pairs (a, b) for XOR lookup verification (c = a XOR b is computed)
+    /// - `poly_inputs`: Pairs (a, b) for polynomial constraint verification (c = a * b is computed)
+    /// - `max_bits`: Maximum bit length for lookup values (table size = 2^(2*max_bits))
+    ///
+    /// # Panics
+    ///
+    /// Panics if max_bits > 8 to prevent accidentally creating very large tables.
+    pub fn new(xor_inputs: Vec<(u64, u64)>, poly_inputs: Vec<(u64, u64)>, max_bits: usize) -> Self {
+        assert!(
+            max_bits <= 8,
+            "max_bits must be <= 8 to avoid excessive table sizes (2^(2*max_bits) entries)"
+        );
         // Compute the XOR results
         let xor_inputs = xor_inputs
             .into_iter()
             .map(|(a, b)| (a, b, a ^ b))
             .collect();
+        // Compute the multiplication results
+        let poly_inputs = poly_inputs
+            .into_iter()
+            .map(|(a, b)| (a, b, a * b))
+            .collect();
         Self {
             xor_inputs,
+            poly_inputs,
             max_bits,
             _marker: PhantomData,
         }
@@ -214,6 +251,39 @@ impl<F: PrimeField> Circuit<F> for PlonkUpCircuit<F> {
             },
         )?;
 
+        // Assign polynomial constraint witnesses (a * b = c)
+        // This demonstrates PlonkUp's polynomial constraints without neighboring row references
+        layouter.assign_region(
+            || "poly_constraints",
+            |mut region| {
+                for (offset, (a, b, c)) in self.poly_inputs.iter().enumerate() {
+                    // Enable the polynomial constraint selector
+                    config.q_poly.enable(&mut region, offset)?;
+
+                    // Assign the values for the polynomial constraint a * b = c
+                    region.assign_advice(
+                        || "poly_a",
+                        config.advice_cols[0],
+                        offset,
+                        || Value::known(F::from(*a)),
+                    )?;
+                    region.assign_advice(
+                        || "poly_b",
+                        config.advice_cols[1],
+                        offset,
+                        || Value::known(F::from(*b)),
+                    )?;
+                    region.assign_advice(
+                        || "poly_c",
+                        config.advice_cols[2],
+                        offset,
+                        || Value::known(F::from(*c)),
+                    )?;
+                }
+                Ok(())
+            },
+        )?;
+
         Ok(())
     }
 }
@@ -237,7 +307,14 @@ mod tests {
             (3, 3), // 3 XOR 3 = 0
         ];
 
-        let circuit = PlonkUpCircuit::<Scalar>::new(xor_inputs, 2);
+        // Create polynomial inputs (a * b = c)
+        let poly_inputs = vec![
+            (2, 3), // 2 * 3 = 6
+            (4, 5), // 4 * 5 = 20
+            (1, 1), // 1 * 1 = 1
+        ];
+
+        let circuit = PlonkUpCircuit::<Scalar>::new(xor_inputs, poly_inputs, 2);
 
         // Empty public inputs
         let pi = vec![vec![]];
@@ -259,7 +336,13 @@ mod tests {
             (12, 3),  // 12 XOR 3 = 15
         ];
 
-        let circuit = PlonkUpCircuit::<Scalar>::new(xor_inputs, 4);
+        // Create polynomial inputs (a * b = c)
+        let poly_inputs = vec![
+            (3, 7),  // 3 * 7 = 21
+            (10, 2), // 10 * 2 = 20
+        ];
+
+        let circuit = PlonkUpCircuit::<Scalar>::new(xor_inputs, poly_inputs, 4);
 
         let pi = vec![vec![]];
 
