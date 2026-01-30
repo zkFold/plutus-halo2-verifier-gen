@@ -3,10 +3,28 @@
 //! This example benchmarks the on-chain verifier for PlonkUp circuits as described in the PlonkUp paper.
 //! PlonkUp circuits have the following characteristics:
 //! - Lookups for 3-element tuples (e.g., XOR table: (a, b, a XOR b))
-//! - Polynomial Plonk constraints
+//! - Polynomial Plonk constraints (a * b = c)
+//! - Accumulator constraint for computing sum of XOR results (public input)
 //! - No references to neighboring rows (only Rotation::cur())
 //!
-//! Usage:
+//! ## Circuit Parameters
+//!
+//! - k (log2 of rows): 9 (512 rows)
+//! - XOR lookup inputs: 8 tuples
+//! - Polynomial constraint inputs: 4 tuples
+//! - Max bits for lookup table: 4 (256 entries in XOR table)
+//! - Public input: Sum of XOR results = 61 (0x3d)
+//!
+//! ## Performance Metrics
+//!
+//! - Proof size: 1792 bytes
+//! - Verifier script size: ~28 KB (Aiken source)
+//!
+//! To run Plutus benchmarks, build the Aiken verifier and use the profiling tools
+//! in the `profiling_setup` directory. See `profiling_setup/README.md` for details.
+//!
+//! ## Usage
+//!
 //! - Run with default KZG: `cargo run --example plonkup`
 //! - Run with GWC KZG: `cargo run --example plonkup gwc_kzg`
 
