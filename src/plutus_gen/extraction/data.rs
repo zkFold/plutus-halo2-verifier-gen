@@ -70,6 +70,12 @@ pub struct InstantiationSpecificData {
 
     pub public_inputs_count: usize,
 
+    /// Number of circuit instances (copies) in the proof
+    pub num_circuit_instances: usize,
+
+    /// Per-instance, per-column public input counts: instance_counts[circuit_idx][column_idx]
+    pub instance_counts: Vec<Vec<usize>>,
+
     pub w_values_count: usize,
 
     pub q_evaluations_count: usize,
@@ -287,7 +293,8 @@ pub enum ScalarExpression<F> {
     Variable(String),
     Advice(usize),
     Fixed(usize),
-    Instance(usize),
+    /// Instance evaluation indexed by (circuit_instance_idx, column_idx)
+    Instance(usize, usize),
     PermutationCommon(usize),
     Negated(Box<ScalarExpression<F>>),
     Sum(Box<ScalarExpression<F>>, Box<ScalarExpression<F>>),

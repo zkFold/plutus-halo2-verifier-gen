@@ -131,8 +131,7 @@ verify proof {{{PUBLIC_INPUTS_NAMES}}} = fst $ flip (M.run VKConstants.transcrip
       --    lagrange eval for instances (public inputs)
       !lagrange_polynomial_instances = lagrangePolynomialBasis x xn barycentricWeight rotations_for_instances
 
-      !instanceEval1 = innerProduct lagrange_polynomial_instances [{{{PUBLIC_INPUTS_LAGRANGE}}}]
-
+{{{INSTANCE_EVALS}}}
 {{{GATES}}}
 
 {{{LOOKUP_TABLES_EXPRESSIONS}}}

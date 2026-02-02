@@ -66,8 +66,7 @@ pub fn verifier(proof: Data, {{{PUBLIC_INPUTS_NAMES}}}) -> Bool {
 
     let rotations_for_instances = rotate_omegas(omega, omega_inv, 0, {{{PUBLIC_INPUTS_COUNT}}})
     let lagrange_polynomial_instances = lagrange_polynomial_basis( x, xn, barycentric_weight, rotations_for_instances)
-    let instance_eval_1 = inner_product(lagrange_polynomial_instances, [{{{PUBLIC_INPUTS_LAGRANGE}}}])
-
+{{{INSTANCE_EVALS}}}
 {{{GATES}}}
 
 {{{LOOKUP_TABLES_EXPRESSIONS}}}

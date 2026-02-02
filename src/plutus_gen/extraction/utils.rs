@@ -167,8 +167,8 @@ impl AikenTranspiler for ScalarExpression<Scalar> {
             ScalarExpression::Fixed(index) => {
                 write!(writer, "fixed_eval_{}", index)
             }
-            ScalarExpression::Instance(index) => {
-                write!(writer, "instance_eval_{:?}", index)
+            ScalarExpression::Instance(circuit_idx, column_idx) => {
+                write!(writer, "instance_eval_{}_{}", circuit_idx, column_idx)
             }
             ScalarExpression::PermutationCommon(index) => {
                 write!(writer, "permutation_common_{:?}", index)
@@ -310,8 +310,8 @@ impl PlinthTranspiler for ScalarExpression<Scalar> {
             ScalarExpression::Fixed(index) => {
                 write!(writer, "fixedEval{:?}", index)
             }
-            ScalarExpression::Instance(index) => {
-                write!(writer, "instanceEval{:?}", index)
+            ScalarExpression::Instance(circuit_idx, column_idx) => {
+                write!(writer, "instanceEval{}_{}", circuit_idx, column_idx)
             }
             ScalarExpression::PermutationCommon(index) => {
                 write!(writer, "permutationCommon{:?}", index)

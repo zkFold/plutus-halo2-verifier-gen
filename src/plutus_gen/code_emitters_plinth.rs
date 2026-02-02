@@ -647,20 +647,70 @@ pub fn emit_verifier_code(
     let permutation_commitments_lifts = (1..=circuit.instantiation_data.permutation_commitments.len()).map(|id| {
         format!("p{}_commitment :: BuiltinBLS12_381_G1_Element\np{}_commitment = $(lift VKConstants.p{}_commitment)\n\n", id, id, id)
     }).join("");
-    let public_inputs = (1..=circuit.instantiation_data.public_inputs_count)
-        .map(|n| format!("  !i{} <- M.commonScalar p{}\n", n, n))
-        .join("");
 
-    let public_inputs_types = (1..=circuit.instantiation_data.public_inputs_count)
-        .map(|_| "Scalar ->".to_string())
-        .join(" ");
-    let public_inputs_names = (1..=circuit.instantiation_data.public_inputs_count)
-        .map(|n| format!("p{}", n))
-        .join(" ");
+    let num_instances = circuit.instantiation_data.num_circuit_instances.max(1);
+    let instance_counts = &circuit.instantiation_data.instance_counts;
 
-    let public_inputs_lagrange = (1..=circuit.instantiation_data.public_inputs_count)
-        .map(|n| format!("i{}", n))
-        .join(", ");
+    // For multi-instance: generate public input names as i_{circuit}_{column}_{value}
+    // For single-instance backward compatibility: i{value}, p{value}
+    let (public_inputs, public_inputs_types, public_inputs_names, public_inputs_lagrange, instance_evals) = if num_instances == 1 {
+        let count = circuit.instantiation_data.public_inputs_count;
+        let inputs = (1..=count)
+            .map(|n| format!("  !i{} <- M.commonScalar p{}\n", n, n))
+            .join("");
+        let types = (1..=count)
+            .map(|_| "Scalar ->".to_string())
+            .join(" ");
+        let names = (1..=count)
+            .map(|n| format!("p{}", n))
+            .join(" ");
+        let lagrange = (1..=count)
+            .map(|n| format!("i{}", n))
+            .join(", ");
+        let evals = format!(
+            "      !instanceEval1_1 = innerProduct lagrange_polynomial_instances [{}]\n",
+            lagrange
+        );
+        (inputs, types, names, lagrange, evals)
+    } else {
+        // Multi-instance: i{circuit}_{column}_{value}, p{circuit}_{column}_{value}
+        let mut inputs = Vec::new();
+        let mut types = Vec::new();
+        let mut names = Vec::new();
+        let mut evals = Vec::new();
+
+        for (circuit_idx, columns) in instance_counts.iter().enumerate() {
+            let circuit_num = circuit_idx + 1;
+            for (col_idx, &count) in columns.iter().enumerate() {
+                let col_num = col_idx + 1;
+                for val_idx in 1..=count {
+                    types.push("Scalar ->".to_string());
+                    names.push(format!("p{}_{}_{}", circuit_num, col_num, val_idx));
+                    inputs.push(format!(
+                        "  !i{}_{}_{} <- M.commonScalar p{}_{}_{}\n",
+                        circuit_num, col_num, val_idx, circuit_num, col_num, val_idx
+                    ));
+                }
+                // Generate instance evaluation for this circuit/column
+                let lagrange: String = (1..=count)
+                    .map(|v| format!("i{}_{}_{}", circuit_num, col_num, v))
+                    .join(", ");
+                evals.push(format!(
+                    "      !instanceEval{}_{} = innerProduct lagrange_polynomial_instances [{}]\n",
+                    circuit_num, col_num, lagrange
+                ));
+            }
+        }
+        let lagrange = "".to_string(); // Not used in multi-instance
+        (inputs.join(""), types.join(" "), names.join(" "), lagrange, evals.join(""))
+    };
+
+    data.insert("PUBLIC_INPUTS".to_string(), public_inputs);
+    data.insert("PUBLIC_INPUTS_TYPES".to_string(), public_inputs_types);
+    data.insert("PUBLIC_INPUTS_NAMES".to_string(), public_inputs_names);
+    data.insert("PUBLIC_INPUTS_LAGRANGE".to_string(), public_inputs_lagrange);
+    data.insert("INSTANCE_EVALS".to_string(), instance_evals);
+    data.insert("NUM_INSTANCES".to_string(), num_instances.to_string());
 
     data.insert(
         "FIXED_COMMITMENT_LIFTS".to_string(),
@@ -670,12 +720,6 @@ pub fn emit_verifier_code(
         "PERMUTATION_COMMITMENT_LIFTS".to_string(),
         permutation_commitments_lifts,
     );
-
-    data.insert("PUBLIC_INPUTS_TYPES".to_string(), public_inputs_types);
-    data.insert("PUBLIC_INPUTS_NAMES".to_string(), public_inputs_names);
-
-    data.insert("PUBLIC_INPUTS".to_string(), public_inputs);
-    data.insert("PUBLIC_INPUTS_LAGRANGE".to_string(), public_inputs_lagrange);
 
     // Include traces only in debug mode, because they increase cost of the Plutus verifier
     #[cfg(feature = "plutus_debug")]

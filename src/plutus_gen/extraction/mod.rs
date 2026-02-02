@@ -146,9 +146,12 @@ where
 
     let mut circuit_description: CircuitRepresentation = CircuitRepresentation::default();
 
-    if instances.len() > 1 {
-        panic!("More than 1 proof for processing");
-    }
+    // Populate multi-instance tracking
+    circuit_description.instantiation_data.num_circuit_instances = instances.len();
+    circuit_description.instantiation_data.instance_counts = instances
+        .iter()
+        .map(|inst| inst.iter().map(|col| col.len()).collect())
+        .collect();
 
     for instance in instances.iter() {
         for instance in instance.iter() {
@@ -258,7 +261,12 @@ where
         .iter()
         .map(|p| p.to_affine())
         .collect();
-    circuit_description.instantiation_data.public_inputs_count = instances[0][0].len();
+    // Use max public inputs count across all instances/columns for Lagrange basis sizing
+    circuit_description.instantiation_data.public_inputs_count = instances
+        .iter()
+        .flat_map(|inst| inst.iter().map(|col| col.len()))
+        .max()
+        .unwrap_or(0);
 
     circuit_description.instantiation_data.n_coefficient = vk.n();
     circuit_description.instantiation_data.s_g2 = params.s_g2().to_affine();
@@ -522,7 +530,8 @@ where
                     Any::Instance => {
                         // (instanceEval{:?} + (beta * permutationCommon{:?}) + gamma)
                         // a + (b * c) + d
-                        let a = ScalarExpression::Instance(eval_index);
+                        // For multi-instance: circuit_idx=1 (will be parameterized in template loop)
+                        let a = ScalarExpression::Instance(1, eval_index);
                         let b = ScalarExpression::Variable("beta".to_string());
                         let c = ScalarExpression::PermutationCommon(permutation_index);
                         let d = ScalarExpression::Variable("gamma".to_string());
@@ -605,8 +614,8 @@ where
                     Any::Instance => {
                         // (instanceEval{:?} + (beta * x) * (powMod scalarDelta {:?}) + gamma)
                         // a + (b * c) * d + e
-
-                        let a = ScalarExpression::Instance(eval_index);
+                        // For multi-instance: circuit_idx=1 (will be parameterized in template loop)
+                        let a = ScalarExpression::Instance(1, eval_index);
                         let b = ScalarExpression::Variable("beta".to_string());
                         let c = ScalarExpression::Variable("x".to_string());
                         let d = ScalarExpression::PowMod(

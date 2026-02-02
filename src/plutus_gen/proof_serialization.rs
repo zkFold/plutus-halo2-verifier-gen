@@ -34,12 +34,24 @@ pub fn serialize_proof(proof_file: String, proof: Vec<u8>) -> Result<()> {
 }
 
 pub fn export_public_inputs(instances: &[&[&[Scalar]]], output: &mut File) -> Result<()> {
-    for instance in instances[0][0].iter() {
-        let mut value = instance.to_bytes_le();
-        value.reverse();
-        output
-            .write((hex::encode(value) + "\n").as_bytes())
-            .context("Failed to write encoded scalar to the output file")?;
+    // Export all instances in order: instances[circuit_idx][column_idx][value_idx]
+    // Format: one scalar per line, circuits separated by empty line
+    for (circuit_idx, circuit_instances) in instances.iter().enumerate() {
+        if circuit_idx > 0 {
+            // Separator between circuit instances
+            output
+                .write(b"\n")
+                .context("Failed to write separator to the output file")?;
+        }
+        for column in circuit_instances.iter() {
+            for value in column.iter() {
+                let mut bytes = value.to_bytes_le();
+                bytes.reverse();
+                output
+                    .write((hex::encode(bytes) + "\n").as_bytes())
+                    .context("Failed to write encoded scalar to the output file")?;
+            }
+        }
     }
 
     Ok(())

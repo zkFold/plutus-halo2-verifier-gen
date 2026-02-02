@@ -60,20 +60,43 @@ fn main() -> Result<()> {
     env_logger::init_from_env(env_logger::Env::default().filter_or("RUST_LOG", "info"));
     let args: Vec<String> = env::args().collect();
 
-    match &args[1..] {
-        [] => compile_plonkup_circuit::<KZGCommitmentScheme<Bls12>>(),
-        [command] if command == "gwc_kzg" => {
-            compile_plonkup_circuit::<GwcKZGCommitmentScheme<Bls12>>()
+    // Parse arguments: [gwc_kzg] [--instances N]
+    let mut use_gwc = false;
+    let mut num_instances: usize = 1;
+    
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "gwc_kzg" => use_gwc = true,
+            "--instances" => {
+                i += 1;
+                if i >= args.len() {
+                    bail!("--instances requires a number argument");
+                }
+                num_instances = args[i].parse().context("--instances must be a positive integer")?;
+                if num_instances == 0 {
+                    bail!("--instances must be at least 1");
+                }
+            }
+            _ => {
+                println!("Usage:");
+                println!("  cargo run --example plonkup [gwc_kzg] [--instances N]");
+                println!();
+                println!("Options:");
+                println!("  gwc_kzg        Use GWC19 version of multi-open KZG");
+                println!("  --instances N  Number of circuit instances to batch (default: 1)");
+                bail!("Invalid command line argument: {}", args[i]);
+            }
         }
-        _ => {
-            println!("Usage:");
-            println!("- to run the example: `cargo run --example plonkup`");
-            println!(
-                "- to run the example using the GWC19 version of multi-open KZG, run: `cargo run --example plonkup gwc_kzg`"
-            );
+        i += 1;
+    }
 
-            bail!("Invalid command line arguments")
-        }
+    info!("Running with {} circuit instance(s)", num_instances);
+
+    if use_gwc {
+        compile_plonkup_circuit::<GwcKZGCommitmentScheme<Bls12>>(num_instances)
+    } else {
+        compile_plonkup_circuit::<KZGCommitmentScheme<Bls12>>(num_instances)
     }
 }
 
@@ -84,44 +107,76 @@ pub fn compile_plonkup_circuit<
             Parameters = ParamsKZG<Bls12>,
             VerifierParameters = ParamsVerifierKZG<Bls12>,
         > + ExtractKZG,
->() -> Result<()> {
+>(num_instances: usize) -> Result<()> {
     let seed = [0u8; 32]; // UNSAFE, constant seed is used for testing purposes
     let mut rng: StdRng = SeedableRng::from_seed(seed);
 
-    // Create XOR lookup inputs (3-element tuples as per PlonkUp)
-    // Using 4-bit values to keep table size manageable
-    let xor_inputs = vec![
-        (5, 10),  // 5 XOR 10 = 15
-        (15, 15), // 15 XOR 15 = 0
-        (8, 7),   // 8 XOR 7 = 15
-        (12, 3),  // 12 XOR 3 = 15
-        (0, 0),   // 0 XOR 0 = 0
-        (1, 1),   // 1 XOR 1 = 0
-        (2, 3),   // 2 XOR 3 = 1
-        (7, 8),   // 7 XOR 8 = 15
-    ];
+    // Generate circuits and public inputs for each instance
+    // Each instance uses slightly different inputs to create distinct proofs
+    let mut circuits = Vec::with_capacity(num_instances);
+    let mut public_inputs_scalars = Vec::with_capacity(num_instances);
 
-    // Create polynomial constraint inputs (a * b = c)
-    let poly_inputs = vec![
-        (2, 3),  // 2 * 3 = 6
-        (4, 5),  // 4 * 5 = 20
-        (10, 2), // 10 * 2 = 20
-        (3, 7),  // 3 * 7 = 21
-    ];
+    for instance_idx in 0..num_instances {
+        // Create XOR lookup inputs - vary by instance to get different public inputs
+        let offset = instance_idx as u64;
+        let xor_inputs = vec![
+            (5 + offset, 10),     // (5+offset) XOR 10
+            (15, 15),             // 15 XOR 15 = 0
+            (8, 7),               // 8 XOR 7 = 15
+            (12, 3),              // 12 XOR 3 = 15
+            (0, 0),               // 0 XOR 0 = 0
+            (1, 1),               // 1 XOR 1 = 0
+            (2, 3),               // 2 XOR 3 = 1
+            (7, 8),               // 7 XOR 8 = 15
+        ];
 
-    let circuit = PlonkUpCircuit::<Scalar>::new(xor_inputs, poly_inputs, 4);
+        // Create polynomial constraint inputs (a * b = c)
+        let poly_inputs = vec![
+            (2, 3),  // 2 * 3 = 6
+            (4, 5),  // 4 * 5 = 20
+            (10, 2), // 10 * 2 = 20
+            (3, 7),  // 3 * 7 = 21
+        ];
 
-    let k: u32 = k_from_circuit(&circuit);
+        let circuit = PlonkUpCircuit::<Scalar>::new(xor_inputs, poly_inputs, 4);
+        let public_input = circuit.public_input();
+        
+        info!("Instance {}: public input = {:?}", instance_idx + 1, public_input);
+        
+        circuits.push(circuit);
+        public_inputs_scalars.push(public_input);
+    }
+
+    let k: u32 = k_from_circuit(&circuits[0]);
     info!("PlonkUp circuit k: {}", k);
     
     let kzg_params: ParamsKZG<Bls12> = get_or_create_kzg_params(k, rng.clone())?;
-    let vk: VerifyingKey<Scalar, S> = keygen_vk(&kzg_params, &circuit)?;
-    let pk: ProvingKey<Scalar, S> = keygen_pk(vk.clone(), &circuit)?;
+    let vk: VerifyingKey<Scalar, S> = keygen_vk(&kzg_params, &circuits[0])?;
+    let pk: ProvingKey<Scalar, S> = keygen_pk(vk.clone(), &circuits[0])?;
 
-    // Public input: sum of XOR results
-    let public_input = circuit.public_input();
-    let instances: &[&[&[Scalar]]] = &[&[&[public_input]]];
-    info!("Public inputs (sum of XOR results): {:?}", instances);
+    // Build instances array: &[&[&[Scalar]]] with shape [num_circuits][num_columns][num_values]
+    // For PlonkUp, each circuit has 1 instance column with 1 public input
+    let instances_per_circuit: Vec<Vec<Scalar>> = public_inputs_scalars
+        .iter()
+        .map(|&pi| vec![pi])
+        .collect();
+    
+    let instances_refs: Vec<&[Scalar]> = instances_per_circuit
+        .iter()
+        .map(|v| v.as_slice())
+        .collect();
+    
+    let instances_per_circuit_refs: Vec<&[&[Scalar]]> = instances_refs
+        .iter()
+        .map(|s| std::slice::from_ref(s))
+        .collect();
+    
+    let instances: &[&[&[Scalar]]] = &instances_per_circuit_refs
+        .iter()
+        .map(|s| *s)
+        .collect::<Vec<_>>();
+    
+    info!("Number of circuit instances: {}", instances.len());
 
     let instances_file =
         "./plinth-verifier/plutus-halo2/test/Generic/serialized_public_input.hex".to_string();
@@ -134,7 +189,7 @@ pub fn compile_plonkup_circuit<
     create_proof(
         &kzg_params,
         &pk,
-        &[circuit.clone()],
+        &circuits,
         instances,
         &mut rng,
         &mut transcript,
