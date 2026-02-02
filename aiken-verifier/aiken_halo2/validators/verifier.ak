@@ -6,14 +6,14 @@ use cardano/transaction.{Transaction}
 use proof_verifier.{verifier}
 
 type Redeemer =
-  (ByteArray, ByteArray)
+  (ByteArray, ByteArray, ByteArray, ByteArray)
 
 validator halo2 {
   mint(redeemer: Redeemer, policy_id: PolicyId, transaction: Transaction) {
-    let (proof, instance_1) = redeemer
+    let (proof, instance_1_1_1, instance_2_1_1, instance_3_1_1) = redeemer
 
     let for_hashing =
-      append_bytearray(proof, instance_1)
+      append_bytearray(append_bytearray(append_bytearray(proof, instance_1_1_1), instance_2_1_1), instance_3_1_1)
 
     let expected_nft_name = blake2b_256(for_hashing)
 
@@ -21,7 +21,9 @@ validator halo2 {
 
     verifier(
       proof,
-      from_bytes(instance_1)
+      from_bytes(instance_1_1_1),
+      from_bytes(instance_2_1_1),
+      from_bytes(instance_3_1_1)
     )
   }
 

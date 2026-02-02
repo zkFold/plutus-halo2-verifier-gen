@@ -22,7 +22,11 @@ use std::{collections::HashMap, fs::File, iter::once, path::Path};
 /// Transform an expression string to use instance-specific variable names.
 /// For example: advice_eval_1 -> advice_eval_I_1
 /// This is used for multi-instance verification where each instance has its own evaluations.
-fn transform_expression_for_instance(expr: &str, instance: usize) -> String {
+/// 
+/// For permutation delta powers, the function also adjusts scale(scalarDelta, N) to account
+/// for the cumulative column offset across instances.
+/// For instance: scale(scalarDelta, 0) in instance 2 becomes scale(scalarDelta, 6) if there are 6 columns per instance.
+fn transform_expression_for_instance(expr: &str, instance: usize, columns_per_instance: usize) -> String {
     // List of patterns that need instance prefixing (per-instance evaluations)
     // These match the variable names generated in proof extraction
     // Use ${1}, ${2}, etc. for unambiguous backreferences in replacement strings
@@ -51,6 +55,19 @@ fn transform_expression_for_instance(expr: &str, instance: usize) -> String {
         // Use regex replace_all with backreferences (${1}, ${2}, etc.)
         result = re.replace_all(&result, replacement.as_str()).to_string();
     }
+    
+    // Adjust delta powers for multi-instance permutation
+    // scale(scalarDelta, N) -> scale(scalarDelta, N + (instance - 1) * columns_per_instance)
+    if instance > 1 {
+        let delta_offset = (instance - 1) * columns_per_instance;
+        let scale_re = Regex::new(r"scale\(\s*scalarDelta\s*,\s*(\d+)\s*\)").unwrap();
+        result = scale_re.replace_all(&result, |caps: &regex::Captures| {
+            let original_power: usize = caps[1].parse().unwrap();
+            let new_power = original_power + delta_offset;
+            format!("scale(scalarDelta, {})", new_power)
+        }).to_string();
+    }
+    
     result
 }
 
@@ -63,6 +80,10 @@ pub fn emit_verifier_code(
 ) -> Result<String, RenderError> {
     let letters = 'a'..='z';
     let num_instances = circuit.instantiation_data.num_circuit_instances.max(1);
+    
+    // Calculate columns per instance for delta power adjustment in multi-instance permutations
+    // This is the number of columns in the permutation circuit (sum of all permutation sets)
+    let columns_per_instance = circuit.permutation_terms_right.len();
     
     // For multi-instance proofs, many steps are repeated per-instance
     // We need to expand them accordingly
@@ -387,7 +408,7 @@ pub fn emit_verifier_code(
                         // Get the base expression and transform it for this instance
                         let base_expr = gate.compile_expression();
                         // Transform per-instance evaluation names
-                        let transformed = transform_expression_for_instance(&base_expr, inst);
+                        let transformed = transform_expression_for_instance(&base_expr, inst, columns_per_instance);
                         format!("    let gate_eq{}_{:?} = {}\n", inst, id + 1, transformed)
                     })
                     .join("")
@@ -437,7 +458,7 @@ pub fn emit_verifier_code(
                     .enumerate()
                     .map(move |(id, gate)| {
                         let base_expr = combine_aiken_expressions(gate.clone());
-                        let transformed = transform_expression_for_instance(&base_expr, inst);
+                        let transformed = transform_expression_for_instance(&base_expr, inst, columns_per_instance);
                         format!("    let lookup_input_eq{}_{:?} = {}\n", inst, id + 1, transformed)
                     })
             })
@@ -518,7 +539,7 @@ pub fn emit_verifier_code(
                     .enumerate()
                     .map(move |(id, expression)| {
                         let base_term = expression.compile_expression();
-                        let term = transform_expression_for_instance(&base_term, inst);
+                        let term = transform_expression_for_instance(&base_term, inst, columns_per_instance);
                         format!("    let term_{}_{:?} = {}\n", inst, id + 1, term)
                     })
             })
@@ -640,7 +661,7 @@ pub fn emit_verifier_code(
                     inst_sets_lhs.insert(*set, format!("left{}_{:?}", inst, id + 1));
                 };
                 let base_term = expression.compile_expression();
-                let term = transform_expression_for_instance(&base_term, inst);
+                let term = transform_expression_for_instance(&base_term, inst, columns_per_instance);
                 all_lhs.push_str(&format!(
                     "    let left{}_{:?} = {} //part of set {} instance {}\n",
                     inst, id + 1, term, set, inst
@@ -666,7 +687,7 @@ pub fn emit_verifier_code(
                     inst_sets_rhs.insert(*set, format!("right{}_{:?}", inst, id + 1));
                 };
                 let base_term = expression.compile_expression();
-                let term = transform_expression_for_instance(&base_term, inst);
+                let term = transform_expression_for_instance(&base_term, inst, columns_per_instance);
                 all_rhs.push_str(&format!(
                     "    let right{}_{:?} = {} //part of set {} instance {}\n",
                     inst, id + 1, term, set, inst
